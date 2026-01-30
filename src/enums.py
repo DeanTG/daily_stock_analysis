@@ -43,3 +43,20 @@ class ReportType(str, Enum):
             ReportType.SIMPLE: "精简报告",
             ReportType.FULL: "完整报告",
         }.get(self, "精简报告")
+
+
+class AnalysisMode(str, Enum):
+    """
+    分析模式枚举
+    """
+    TECHNICAL = "technical"      # 技术面分析（默认，含趋势交易）
+    FUNDAMENTAL = "fundamental"  # 基本面分析（侧重财务、行业）
+    ALL = "all"                  # 全量分析（技术面 + 基本面）
+    
+    @classmethod
+    def from_str(cls, value: str) -> "AnalysisMode":
+        """从字符串安全地转换为枚举值"""
+        try:
+            return cls(value.lower().strip())
+        except (ValueError, AttributeError):
+            return cls.TECHNICAL

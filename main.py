@@ -46,6 +46,7 @@ from src.core.pipeline import StockAnalysisPipeline
 from src.core.market_review import run_market_review
 from src.search_service import SearchService
 from src.analyzer import GeminiAnalyzer
+from src.enums import AnalysisMode
 
 # 配置日志格式
 LOG_FORMAT = '%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s'
@@ -202,6 +203,14 @@ def parse_arguments() -> argparse.Namespace:
         help='仅启动 WebUI 服务，不自动执行分析（通过 /analysis API 手动触发）'
     )
     
+    parser.add_argument(
+        '--mode',
+        type=str,
+        default='all',
+        choices=['technical', 'fundamental', 'all'],
+        help='分析模式：technical(技术面)、fundamental(基本面) 或 all(全量分析，默认)'
+    )
+    
     return parser.parse_args()
 
 
@@ -216,6 +225,9 @@ def run_full_analysis(
     这是定时任务调用的主函数
     """
     try:
+        # 解析分析模式
+        mode = AnalysisMode.from_str(args.mode)
+        
         # 命令行参数 --single-notify 覆盖配置（#55）
         if getattr(args, 'single_notify', False):
             config.single_stock_notify = True
@@ -230,7 +242,8 @@ def run_full_analysis(
         results = pipeline.run(
             stock_codes=stock_codes,
             dry_run=args.dry_run,
-            send_notification=not args.no_notify
+            send_notification=not args.no_notify,
+            mode=mode
         )
 
         # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟

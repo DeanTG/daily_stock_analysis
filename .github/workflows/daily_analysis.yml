@@ -17,6 +17,7 @@ on:
           - full          # 完整分析（股票+大盘）
           - market-only   # 仅大盘复盘
           - stocks-only   # 仅股票分析
+          - fundamental-only # 仅基本面分析
 
 # 并发控制：同一时间只运行一个分析任务
 concurrency:
@@ -174,6 +175,8 @@ jobs:
             python main.py --market-review
           elif [ "$MODE" = "stocks-only" ]; then
             python main.py --no-market-review
+          elif [ "$MODE" = "fundamental-only" ]; then
+            python main.py --mode fundamental --no-market-review
           else
             python main.py
           fi

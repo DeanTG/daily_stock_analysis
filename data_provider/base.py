@@ -577,3 +577,27 @@ class DataFetcherManager:
             logger.error(f"[筹码分布] 获取 {stock_code} 失败: {e}")
             circuit_breaker.record_failure("akshare_chip", str(e))
             return None
+    
+    def get_base_info(self, stock_code: str) -> Optional[dict]:
+        """
+        获取股票基本信息（优先使用 EfinanceFetcher）
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            基本信息字典，获取失败返回 None
+        """
+        # 尝试 EfinanceFetcher
+        for fetcher in self._fetchers:
+            if fetcher.name == "EfinanceFetcher":
+                if hasattr(fetcher, 'get_base_info'):
+                    try:
+                        info = fetcher.get_base_info(stock_code)
+                        if info:
+                            return info
+                    except Exception as e:
+                        logger.warning(f"[基本信息] EfinanceFetcher 获取失败: {e}")
+                break
+        
+        return None

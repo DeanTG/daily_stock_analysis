@@ -24,7 +24,7 @@ from data_provider.realtime_types import ChipDistribution
 from src.analyzer import GeminiAnalyzer, AnalysisResult, STOCK_NAME_MAP
 from src.notification import NotificationService, NotificationChannel
 from src.search_service import SearchService
-from src.enums import ReportType
+from src.enums import ReportType, AnalysisMode
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from bot.models import BotMessage
 
@@ -136,7 +136,11 @@ class StockAnalysisPipeline:
             logger.error(f"[{code}] {error_msg}")
             return False, error_msg
     
-    def analyze_stock(self, code: str) -> Optional[AnalysisResult]:
+    def analyze_stock(
+        self, 
+        code: str,
+        mode: AnalysisMode = AnalysisMode.TECHNICAL
+    ) -> Optional[AnalysisResult]:
         """
         分析单只股票（增强版：含量比、换手率、筹码分析、多维度情报）
         
@@ -150,6 +154,7 @@ class StockAnalysisPipeline:
         
         Args:
             code: 股票代码
+            mode: 分析模式
             
         Returns:
             AnalysisResult 或 None（如果分析失败）
@@ -193,6 +198,16 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.warning(f"[{code}] 获取筹码分布失败: {e}")
             
+            # Step 2.5: 基本面模式下获取详细基本信息
+            base_info = None
+            if mode == AnalysisMode.FUNDAMENTAL:
+                try:
+                    base_info = self.fetcher_manager.get_base_info(code)
+                    if base_info:
+                        logger.info(f"[{code}] 基本信息获取成功: 市盈率={base_info.get('市盈率(动)', 'N/A')}")
+                except Exception as e:
+                    logger.warning(f"[{code}] 获取基本信息失败: {e}")
+
             # Step 3: 趋势分析（基于交易理念）
             trend_result: Optional[TrendAnalysisResult] = None
             try:
@@ -239,7 +254,7 @@ class StockAnalysisPipeline:
                 logger.warning(f"[{code}] 无法获取分析上下文，跳过分析")
                 return None
             
-            # Step 6: 增强上下文数据（添加实时行情、筹码、趋势分析结果、股票名称）
+            # Step 6: 增强上下文数据（添加实时行情、筹码、趋势分析结果、股票名称、基本信息）
             enhanced_context = self._enhance_context(
                 context, 
                 realtime_quote, 
@@ -248,8 +263,12 @@ class StockAnalysisPipeline:
                 stock_name  # 传入股票名称
             )
             
-            # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
-            result = self.analyzer.analyze(enhanced_context, news_context=news_context)
+            # 添加基本信息
+            if base_info:
+                enhanced_context['base_info'] = base_info
+            
+            # Step 7: 调用 AI 分析（传入增强的上下文和新闻，以及模式）
+            result = self.analyzer.analyze(enhanced_context, news_context=news_context, mode=mode)
             
             return result
             
@@ -362,29 +381,21 @@ class StockAnalysisPipeline:
         code: str,
         skip_analysis: bool = False,
         single_stock_notify: bool = False,
-        report_type: ReportType = ReportType.SIMPLE
-    ) -> Optional[AnalysisResult]:
+        report_type: ReportType = ReportType.SIMPLE,
+        mode: AnalysisMode = AnalysisMode.TECHNICAL
+    ) -> List[AnalysisResult]:
         """
-        处理单只股票的完整流程
-
-        包括：
-        1. 获取数据
-        2. 保存数据
-        3. AI 分析
-        4. 单股推送（可选，#55）
-
-        此方法会被线程池调用，需要处理好异常
+        处理单只股票的完整流程（支持全量分析模式）
 
         Args:
             code: 股票代码
-            skip_analysis: 是否跳过 AI 分析
-            single_stock_notify: 是否启用单股推送模式（每分析完一只立即推送）
-            report_type: 报告类型枚举（从配置读取，Issue #119）
+            mode: 分析模式（ALL 模式下会执行两次分析）
 
         Returns:
-            AnalysisResult 或 None
+            AnalysisResult 列表（通常为1个，ALL模式下为2个）
         """
-        logger.info(f"========== 开始处理 {code} ==========")
+        logger.info(f"========== 开始处理 {code} (模式: {mode.value}) ==========")
+        results = []
         
         try:
             # Step 1: 获取并保存数据
@@ -392,53 +403,69 @@ class StockAnalysisPipeline:
             
             if not success:
                 logger.warning(f"[{code}] 数据获取失败: {error}")
-                # 即使获取失败，也尝试用已有数据分析
             
             # Step 2: AI 分析
             if skip_analysis:
                 logger.info(f"[{code}] 跳过 AI 分析（dry-run 模式）")
-                return None
+                return []
             
-            result = self.analyze_stock(code)
+            # 确定需要执行的分析模式
+            modes_to_run = []
+            if mode == AnalysisMode.ALL:
+                modes_to_run = [AnalysisMode.TECHNICAL, AnalysisMode.FUNDAMENTAL]
+            else:
+                modes_to_run = [mode]
             
-            if result:
-                logger.info(
-                    f"[{code}] 分析完成: {result.operation_advice}, "
-                    f"评分 {result.sentiment_score}"
-                )
+            # 依次执行分析
+            for current_mode in modes_to_run:
+                logger.info(f"[{code}] 执行子分析: {current_mode.value}")
+                result = self.analyze_stock(code, mode=current_mode)
                 
-                # 单股推送模式（#55）：每分析完一只股票立即推送
-                if single_stock_notify and self.notifier.is_available():
-                    try:
-                        # 根据报告类型选择生成方法
-                        if report_type == ReportType.FULL:
-                            # 完整报告：使用决策仪表盘格式
-                            report_content = self.notifier.generate_dashboard_report([result])
-                            logger.info(f"[{code}] 使用完整报告格式")
-                        else:
-                            # 精简报告：使用单股报告格式（默认）
-                            report_content = self.notifier.generate_single_stock_report(result)
-                            logger.info(f"[{code}] 使用精简报告格式")
-                        
-                        if self.notifier.send(report_content):
-                            logger.info(f"[{code}] 单股推送成功")
-                        else:
-                            logger.warning(f"[{code}] 单股推送失败")
-                    except Exception as e:
-                        logger.error(f"[{code}] 单股推送异常: {e}")
+                if result:
+                    # 标记分析类型，方便后续处理
+                    result.analysis_type = current_mode.value 
+                    results.append(result)
+                    
+                    logger.info(
+                        f"[{code}] {current_mode.value} 分析完成: {result.operation_advice}, "
+                        f"评分 {result.sentiment_score}"
+                    )
+                    
+                    # 单股推送
+                    if single_stock_notify and self.notifier.is_available():
+                        self._notify_single_result(result, report_type, current_mode)
             
-            return result
+            return results
             
         except Exception as e:
-            # 捕获所有异常，确保单股失败不影响整体
             logger.exception(f"[{code}] 处理过程发生未知异常: {e}")
-            return None
+            return []
+
+    def _notify_single_result(self, result: AnalysisResult, report_type: ReportType, mode: AnalysisMode):
+        """内部方法：处理单次分析结果的推送"""
+        try:
+            code = result.code
+            # 根据报告类型选择生成方法
+            if report_type == ReportType.FULL:
+                report_content = self.notifier.generate_dashboard_report([result])
+            else:
+                report_content = self.notifier.generate_single_stock_report(result)
+            
+            # 加上模式前缀，区分推送
+            prefix = "【基本面】" if mode == AnalysisMode.FUNDAMENTAL else "【技术面】"
+            if self.notifier.send(f"{prefix}\n{report_content}"):
+                logger.info(f"[{code}] {mode.value} 单股推送成功")
+            else:
+                logger.warning(f"[{code}] {mode.value} 单股推送失败")
+        except Exception as e:
+            logger.error(f"[{code}] 单股推送异常: {e}")
     
     def run(
         self, 
         stock_codes: Optional[List[str]] = None,
         dry_run: bool = False,
-        send_notification: bool = True
+        send_notification: bool = True,
+        mode: AnalysisMode = AnalysisMode.TECHNICAL
     ) -> List[AnalysisResult]:
         """
         运行完整的分析流程
@@ -453,6 +480,7 @@ class StockAnalysisPipeline:
             stock_codes: 股票代码列表（可选，默认使用配置中的自选股）
             dry_run: 是否仅获取数据不分析
             send_notification: 是否发送推送通知
+            mode: 分析模式
             
         Returns:
             分析结果列表
@@ -470,7 +498,7 @@ class StockAnalysisPipeline:
         
         logger.info(f"===== 开始分析 {len(stock_codes)} 只股票 =====")
         logger.info(f"股票列表: {', '.join(stock_codes)}")
-        logger.info(f"并发数: {self.max_workers}, 模式: {'仅获取数据' if dry_run else '完整分析'}")
+        logger.info(f"并发数: {self.max_workers}, 模式: {'仅获取数据' if dry_run else '完整分析'}, 分析类型: {mode.value}")
         
         # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
         # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
@@ -502,7 +530,8 @@ class StockAnalysisPipeline:
                     code,
                     skip_analysis=dry_run,
                     single_stock_notify=single_stock_notify and send_notification,
-                    report_type=report_type  # Issue #119: 传递报告类型
+                    report_type=report_type,  # Issue #119: 传递报告类型
+                    mode=mode
                 ): code
                 for code in stock_codes
             }
@@ -511,9 +540,9 @@ class StockAnalysisPipeline:
             for idx, future in enumerate(as_completed(future_to_code)):
                 code = future_to_code[future]
                 try:
-                    result = future.result()
-                    if result:
-                        results.append(result)
+                    stock_results = future.result()
+                    if stock_results:
+                        results.extend(stock_results)
 
                     # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
                     if idx < len(stock_codes) - 1 and analysis_delay > 0:
@@ -532,7 +561,9 @@ class StockAnalysisPipeline:
             success_count = sum(1 for code in stock_codes if self.db.has_today_data(code))
             fail_count = len(stock_codes) - success_count
         else:
-            success_count = len(results)
+            # 统计成功的股票数量（只要有一个分析结果算成功）
+            processed_codes = set(r.code for r in results)
+            success_count = len(processed_codes)
             fail_count = len(stock_codes) - success_count
         
         logger.info("===== 分析完成 =====")
@@ -562,12 +593,35 @@ class StockAnalysisPipeline:
         try:
             logger.info("生成决策仪表盘日报...")
             
+            # 分组处理不同类型的报告
+            tech_results = [r for r in results if getattr(r, 'analysis_type', 'technical') == 'technical']
+            fund_results = [r for r in results if getattr(r, 'analysis_type', '') == 'fundamental']
+            
+            # 发送技术面报告
+            if tech_results:
+                self._send_batch_report(tech_results, "【技术面】日报", skip_push)
+                
+            # 发送基本面报告
+            if fund_results:
+                self._send_batch_report(fund_results, "【基本面】深度分析报告", skip_push)
+        except Exception as e:
+            logger.error(f"发送通知失败: {e}")
+
+    def _send_batch_report(self, results: List[AnalysisResult], title_prefix: str, skip_push: bool):
+        """内部方法：发送批量报告"""
+        try:
             # 生成决策仪表盘格式的详细日报
             report = self.notifier.generate_dashboard_report(results)
             
+            # 添加标题前缀
+            if not report.startswith("#"):
+                 report = f"# {title_prefix}\n\n{report}"
+            else:
+                 report = report.replace("# A股", f"# {title_prefix} A股", 1)
+
             # 保存到本地
             filepath = self.notifier.save_report_to_file(report)
-            logger.info(f"决策仪表盘日报已保存: {filepath}")
+            logger.info(f"{title_prefix} 已保存: {filepath}")
             
             # 跳过推送（单股推送模式）
             if skip_push:
@@ -582,11 +636,13 @@ class StockAnalysisPipeline:
                 wechat_success = False
                 if NotificationChannel.WECHAT in channels:
                     dashboard_content = self.notifier.generate_wechat_dashboard(results)
+                    # 加上前缀
+                    dashboard_content = f"{title_prefix}\n{dashboard_content}"
                     logger.info(f"企业微信仪表盘长度: {len(dashboard_content)} 字符")
                     logger.debug(f"企业微信推送内容:\n{dashboard_content}")
                     wechat_success = self.notifier.send_to_wechat(dashboard_content)
 
-                # 其他渠道：发完整报告（避免自定义 Webhook 被 wechat 截断逻辑污染）
+                # 其他渠道：发完整报告
                 non_wechat_success = False
                 for channel in channels:
                     if channel == NotificationChannel.WECHAT:
@@ -604,11 +660,10 @@ class StockAnalysisPipeline:
 
                 success = wechat_success or non_wechat_success or context_success
                 if success:
-                    logger.info("决策仪表盘推送成功")
+                    logger.info(f"{title_prefix} 推送成功")
                 else:
-                    logger.warning("决策仪表盘推送失败")
+                    logger.warning(f"{title_prefix} 推送失败")
             else:
                 logger.info("通知渠道未配置，跳过推送")
-                
         except Exception as e:
-            logger.error(f"发送通知失败: {e}")
+            logger.error(f"发送批量报告失败: {e}")

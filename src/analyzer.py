@@ -25,6 +25,7 @@ from tenacity import (
 )
 
 from src.config import get_config
+from src.enums import AnalysisMode
 
 logger = logging.getLogger(__name__)
 
@@ -420,6 +421,138 @@ class GeminiAnalyzer:
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
 5. **风险优先级**：舆情中的风险点要醒目标出"""
 
+    # ========================================
+    # 系统提示词 - 基本面分析版 v1.0
+    # ========================================
+    FUNDAMENTAL_SYSTEM_PROMPT = """你是一位专注于价值投资的 A 股资深分析师，负责生成专业的【基本面深度分析】报告。
+
+## 核心分析理念
+
+### 1. 价值发现
+- **好行业**：行业空间大、竞争格局优、处于成长期或成熟期
+- **好公司**：护城河深（品牌/技术/成本）、管理层优秀、治理结构完善
+- **好价格**：估值合理或低估（PE/PB历史分位）、安全边际足
+
+### 2. 财务健康度（排除雷区）
+- **盈利能力**：ROE > 15%（长期），毛利率/净利率稳定或提升
+- **成长能力**：营收/净利增长率 > 行业平均，警惕"增收不增利"
+- **现金流**：经营性现金流净额 > 净利润（含金量高）
+- **偿债能力**：资产负债率合理（非金融 < 60%），流动比率 > 1
+
+### 3. 风险排查
+- 警惕：大额商誉减值、存货激增、应收账款占比过高
+- 警惕：大股东高比例质押、频繁减持
+- 警惕：频繁并购重组、蹭热点
+
+## 输出格式：决策仪表盘 JSON (基本面版)
+
+请严格按照以下 JSON 格式输出：
+
+```json
+{
+    "sentiment_score": 0-100整数,
+    "trend_prediction": "低估/合理/高估/泡沫",
+    "operation_advice": "长期持有/分批买入/观望/获利了结",
+    "confidence_level": "高/中/低",
+    
+    "dashboard": {
+        "core_conclusion": {
+            "one_sentence": "一句话核心结论（基于基本面和估值）",
+            "signal_type": "💎价值投资/✨成长潜力/⚠️业绩风险/💣财务暴雷",
+            "time_sensitivity": "长期关注/中线布局/短期博弈/回避",
+            "position_advice": {
+                "no_position": "空仓者建议：估值区间分析",
+                "has_position": "持仓者建议：长期持有逻辑"
+            }
+        },
+        
+        "data_perspective": {
+            "valuation": {
+                "pe_ttm": "市盈率数值及评价",
+                "pb_mrq": "市净率数值及评价",
+                "valuation_status": "低估/合理/高估",
+                "peg": "PEG数值（如适用）"
+            },
+            "financial_health": {
+                "roe": "ROE数值及评价",
+                "revenue_growth": "营收增长率",
+                "profit_growth": "净利增长率",
+                "health_score": "财务健康评分0-100"
+            },
+            "industry_status": {
+                "industry": "所属行业",
+                "ranking": "行业排名/地位",
+                "industry_trend": "行业景气度：上行/平稳/下行"
+            }
+        },
+        
+        "intelligence": {
+            "latest_news": "【近期公告】业绩预告/重大合同",
+            "risk_alerts": ["财务风险1", "经营风险2"],
+            "positive_catalysts": ["业绩超预期", "行业政策利好"],
+            "earnings_outlook": "未来业绩展望"
+        },
+        
+        "battle_plan": {
+            "sniper_points": {
+                "ideal_buy": "安全边际价格（估值下限）",
+                "fair_price": "合理估值价格",
+                "take_profit": "高估价格区域"
+            },
+            "position_strategy": {
+                "suggested_position": "建议配置比例（长期）",
+                "investment_logic": "核心投资逻辑简述"
+            },
+            "action_checklist": [
+                "✅/⚠️/❌ 检查项1：好行业",
+                "✅/⚠️/❌ 检查项2：好公司",
+                "✅/⚠️/❌ 检查项3：好价格",
+                "✅/⚠️/❌ 检查项4：财务健康",
+                "✅/⚠️/❌ 检查项5：无重大雷区"
+            ]
+        }
+    },
+    
+    "analysis_summary": "基本面深度分析摘要",
+    "key_points": "核心看点",
+    "risk_warning": "主要风险提示",
+    "buy_reason": "投资理由",
+    
+    "fundamental_analysis": "详细的基本面分析内容...",
+    "sector_position": "行业地位分析...",
+    "company_highlights": "公司核心竞争力...",
+    
+    "search_performed": true/false,
+    "data_sources": "数据来源说明"
+}
+```
+
+## 评分标准（基本面）
+
+### 极具价值（80-100分）：
+- ✅ 行业龙头或高成长细分龙头
+- ✅ 估值处于历史低位或合理区间
+- ✅ 财务极其健康，ROE持续高位
+- ✅ 业绩确定性高
+
+### 具有价值（60-79分）：
+- ✅ 行业地位稳固
+- ✅ 估值合理
+- ✅ 财务健康
+- ⚪ 成长性一般或有周期性
+
+### 观望（40-59分）：
+- ⚠️ 估值偏高
+- ⚠️ 业绩增速下滑
+- ⚠️ 行业竞争加剧
+
+### 回避（0-39分）：
+- ❌ 财务造假嫌疑
+- ❌ 业绩大幅亏损
+- ❌ 估值严重泡沫
+- ❌ 行业衰退
+"""
+
     def __init__(self, api_key: Optional[str] = None):
         """
         初始化 AI 分析器
@@ -584,13 +717,14 @@ class GeminiAnalyzer:
         """检查分析器是否可用"""
         return self._model is not None or self._openai_client is not None
     
-    def _call_openai_api(self, prompt: str, generation_config: dict) -> str:
+    def _call_openai_api(self, prompt: str, generation_config: dict, system_prompt: Optional[str] = None) -> str:
         """
         调用 OpenAI 兼容 API
         
         Args:
             prompt: 提示词
             generation_config: 生成配置
+            system_prompt: 系统提示词（可选，默认使用 self.SYSTEM_PROMPT）
             
         Returns:
             响应文本
@@ -598,6 +732,8 @@ class GeminiAnalyzer:
         config = get_config()
         max_retries = config.gemini_max_retries
         base_delay = config.gemini_retry_delay
+        
+        sys_prompt = system_prompt or self.SYSTEM_PROMPT
         
         for attempt in range(max_retries):
             try:
@@ -611,7 +747,7 @@ class GeminiAnalyzer:
                 response = self._openai_client.chat.completions.create(
                     model=self._current_model_name,
                     messages=[
-                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "system", "content": sys_prompt},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=generation_config.get('temperature', config.openai_temperature),
@@ -637,7 +773,7 @@ class GeminiAnalyzer:
         
         raise Exception("OpenAI API 调用失败，已达最大重试次数")
     
-    def _call_api_with_retry(self, prompt: str, generation_config: dict) -> str:
+    def _call_api_with_retry(self, prompt: str, generation_config: dict, system_prompt: Optional[str] = None) -> str:
         """
         调用 AI API，带有重试和模型切换机制
         
@@ -651,13 +787,14 @@ class GeminiAnalyzer:
         Args:
             prompt: 提示词
             generation_config: 生成配置
+            system_prompt: 系统提示词（OpenAI 模式使用）
             
         Returns:
             响应文本
         """
         # 如果已经在使用 OpenAI 模式，直接调用 OpenAI
         if self._use_openai:
-            return self._call_openai_api(prompt, generation_config)
+            return self._call_openai_api(prompt, generation_config, system_prompt)
         
         config = get_config()
         max_retries = config.gemini_max_retries
@@ -711,7 +848,7 @@ class GeminiAnalyzer:
         if self._openai_client:
             logger.warning("[Gemini] 所有重试失败，切换到 OpenAI 兼容 API")
             try:
-                return self._call_openai_api(prompt, generation_config)
+                return self._call_openai_api(prompt, generation_config, system_prompt)
             except Exception as openai_error:
                 logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
                 raise last_error or openai_error
@@ -721,7 +858,7 @@ class GeminiAnalyzer:
             self._init_openai_fallback()
             if self._openai_client:
                 try:
-                    return self._call_openai_api(prompt, generation_config)
+                    return self._call_openai_api(prompt, generation_config, system_prompt)
                 except Exception as openai_error:
                     logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
                     raise last_error or openai_error
@@ -732,7 +869,8 @@ class GeminiAnalyzer:
     def analyze(
         self, 
         context: Dict[str, Any],
-        news_context: Optional[str] = None
+        news_context: Optional[str] = None,
+        mode: AnalysisMode = AnalysisMode.TECHNICAL
     ) -> AnalysisResult:
         """
         分析单只股票
@@ -746,6 +884,7 @@ class GeminiAnalyzer:
         Args:
             context: 从 storage.get_analysis_context() 获取的上下文数据
             news_context: 预先搜索的新闻内容（可选）
+            mode: 分析模式（TECHNICAL=技术面, FUNDAMENTAL=基本面）
             
         Returns:
             AnalysisResult 对象
@@ -753,6 +892,23 @@ class GeminiAnalyzer:
         code = context.get('code', 'Unknown')
         config = get_config()
         
+        # 切换系统提示词（如果模式改变）
+        target_prompt = self.FUNDAMENTAL_SYSTEM_PROMPT if mode == AnalysisMode.FUNDAMENTAL else self.SYSTEM_PROMPT
+        
+        # 检查是否需要重新初始化模型（OpenAI 模式下每次调用都会传 system prompt，无需重新初始化）
+        if not self._use_openai and hasattr(self, '_model'):
+            # 这里简单处理：如果模式是基本面，临时创建一个新模型实例，或者接受每次重新初始化
+            # 为了性能，最好缓存。但鉴于每天运行一次，重新初始化开销可接受。
+            try:
+                import google.generativeai as genai
+                model_name = self._current_model_name or config.gemini_model
+                self._model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=target_prompt,
+                )
+            except Exception as e:
+                logger.warning(f"切换模型 Prompt 失败: {e}")
+
         # 请求前增加延时（防止连续请求触发限流）
         request_delay = config.gemini_request_delay
         if request_delay > 0:
@@ -786,7 +942,7 @@ class GeminiAnalyzer:
         
         try:
             # 格式化输入（包含技术面数据和新闻）
-            prompt = self._format_prompt(context, name, news_context)
+            prompt = self._format_prompt(context, name, news_context, mode)
             
             # 获取模型名称
             model_name = getattr(self, '_current_model_name', None)
@@ -816,7 +972,7 @@ class GeminiAnalyzer:
             
             # 使用带重试的 API 调用
             start_time = time.time()
-            response_text = self._call_api_with_retry(prompt, generation_config)
+            response_text = self._call_api_with_retry(prompt, generation_config, target_prompt)
             elapsed = time.time() - start_time
             
             # 记录响应信息
@@ -855,17 +1011,17 @@ class GeminiAnalyzer:
         self, 
         context: Dict[str, Any], 
         name: str,
-        news_context: Optional[str] = None
+        news_context: Optional[str] = None,
+        mode: AnalysisMode = AnalysisMode.TECHNICAL
     ) -> str:
         """
-        格式化分析提示词（决策仪表盘 v2.0）
-        
-        包含：技术指标、实时行情（量比/换手率）、筹码分布、趋势分析、新闻
+        格式化分析提示词（支持多模式）
         
         Args:
             context: 技术面数据上下文（包含增强数据）
             name: 股票名称（默认值，可能被上下文覆盖）
             news_context: 预先搜索的新闻内容
+            mode: 分析模式
         """
         code = context.get('code', 'Unknown')
         
@@ -876,7 +1032,76 @@ class GeminiAnalyzer:
             
         today = context.get('today', {})
         
-        # ========== 构建决策仪表盘格式的输入 ==========
+        # ========== 基本面模式：构建基本面深度分析输入 ==========
+        if mode == AnalysisMode.FUNDAMENTAL:
+            base_info = context.get('base_info', {})
+            
+            prompt = f"""# 基本面深度分析请求
+
+## 🏢 股票基础信息
+| 项目 | 数据 |
+|------|------|
+| 股票代码 | **{code}** |
+| 股票名称 | **{stock_name}** |
+| 所属行业 | {base_info.get('所处行业', '未知')} |
+| 分析日期 | {context.get('date', '未知')} |
+
+---
+
+## 💰 财务与估值数据
+
+### 核心财务指标
+| 指标 | 数值 | 评价标准 |
+|------|------|----------|
+| **市盈率(动)** | **{base_info.get('市盈率(动)', 'N/A')}** | 历史分位及行业对比 |
+| 市净率 | {base_info.get('市净率', 'N/A')} | |
+| **ROE** | **{base_info.get('ROE', 'N/A')}%** | >15%为优秀 |
+| 净利率 | {base_info.get('净利率', 'N/A')}% | |
+| 毛利率 | {base_info.get('毛利率', 'N/A')}% | |
+| 总市值 | {base_info.get('总市值', 'N/A')} | |
+| 流通市值 | {base_info.get('流通市值', 'N/A')} | |
+
+### 实时行情快照
+| 指标 | 数值 |
+|------|------|
+| 当前价格 | {context.get('realtime', {}).get('price', 'N/A')} 元 |
+| 60日涨跌幅 | {context.get('realtime', {}).get('change_60d', 'N/A')}% |
+
+---
+
+## 📰 舆情与情报
+"""
+            if news_context:
+                prompt += f"""
+以下是 **{stock_name}({code})** 近7日的新闻搜索结果，请重点提取：
+1. 📊 **业绩预期**：年报预告、业绩快报、分析师评级
+2. 🚨 **风险排查**：减持、质押、诉讼、处罚
+3. 🎯 **行业动态**：政策利好、竞争格局变化
+
+```
+{news_context}
+```
+"""
+            else:
+                prompt += "暂无最新舆情信息。\n"
+
+            prompt += f"""
+---
+
+## ✅ 分析任务
+
+请为 **{stock_name}({code})** 生成【基本面深度分析报告】，严格按照 JSON 格式输出。
+
+### 重点回答：
+1. ❓ 估值是否合理？（结合PE/PB和行业地位）
+2. ❓ 财务是否健康？（ROE、增长率、现金流）
+3. ❓ 有无重大雷区？（减持、质押、造假）
+4. ❓ 是否具备长期投资价值？
+
+请输出完整的 JSON 格式决策仪表盘。"""
+            return prompt
+
+        # ========== 默认技术面模式：构建决策仪表盘输入 ==========
         prompt = f"""# 决策仪表盘分析请求
 
 ## 📊 股票基础信息
