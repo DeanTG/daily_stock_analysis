@@ -57,23 +57,46 @@ class StockScreener:
         """
         try:
             import efinance as ef
-            logger.info("正在获取全市场实时行情快照...")
-            df = ef.stock.get_realtime_quotes()
+            import akshare as ak
+            
+            # 优先使用 akshare 获取（更稳定）
+            try:
+                logger.info("尝试使用 AkShare 获取全市场实时行情...")
+                df = ak.stock_zh_a_spot_em()
+                
+                # 标准化列名 (Akshare -> 标准)
+                rename_map = {
+                    '代码': 'code',
+                    '名称': 'name',
+                    '最新价': 'price',
+                    '市盈率-动态': 'pe',
+                    '总市值': 'total_mv',
+                    '流通市值': 'circ_mv',
+                    '涨跌幅': 'pct_chg'
+                }
+                df = df.rename(columns=rename_map)
+                logger.info(f"AkShare 获取成功，共 {len(df)} 条数据")
+            except Exception as e:
+                logger.warning(f"AkShare 获取失败 ({e})，切换到 efinance...")
+                # 回退到 efinance
+                logger.info("尝试使用 efinance 获取全市场实时行情快照...")
+                df = ef.stock.get_realtime_quotes()
             
             # 打印列名以便调试
-            logger.debug(f"全市场数据列名: {df.columns.tolist()}")
+            # logger.debug(f"全市场数据列名: {df.columns.tolist()}")
             
-            # 标准化列名
-            rename_map = {
-                '股票代码': 'code',
-                '股票名称': 'name',
-                '最新价': 'price',
-                '市盈率(动)': 'pe',
-                '总市值': 'total_mv',
-                '流通市值': 'circ_mv',
-                '涨跌幅': 'pct_chg'
-            }
-            df = df.rename(columns=rename_map)
+            # 如果是 efinance 的列名，进行映射
+            if '股票代码' in df.columns:
+                rename_map = {
+                    '股票代码': 'code',
+                    '股票名称': 'name',
+                    '最新价': 'price',
+                    '市盈率(动)': 'pe',
+                    '总市值': 'total_mv',
+                    '流通市值': 'circ_mv',
+                    '涨跌幅': 'pct_chg'
+                }
+                df = df.rename(columns=rename_map)
             
             # 确保数值列类型正确
             numeric_cols = ['price', 'pe', 'total_mv', 'circ_mv', 'pct_chg']
