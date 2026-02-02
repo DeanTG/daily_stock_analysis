@@ -95,6 +95,17 @@ class BaseFetcher(ABC):
         """
         pass
     
+    @abstractmethod
+    def get_all_stock_list(self) -> pd.DataFrame:
+        """
+        获取全市场股票列表
+
+        Returns:
+            DataFrame: 包含股票代码和名称的列表
+            Columns: ['code', 'name']
+        """
+        pass
+    
     def get_daily_data(
         self, 
         stock_code: str, 
@@ -306,6 +317,34 @@ class DataFetcherManager:
         self._fetchers.append(fetcher)
         self._fetchers.sort(key=lambda f: f.priority)
     
+    def get_all_stock_list(self) -> pd.DataFrame:
+        """
+        获取全市场股票列表（自动切换数据源）
+
+        Returns:
+            DataFrame: 包含股票代码和名称的列表
+        """
+        errors = []
+        
+        for fetcher in self._fetchers:
+            try:
+                logger.info(f"尝试使用 [{fetcher.name}] 获取全市场股票列表...")
+                df = fetcher.get_all_stock_list()
+                
+                if df is not None and not df.empty:
+                    logger.info(f"[{fetcher.name}] 成功获取 {len(df)} 只股票")
+                    return df
+                    
+            except Exception as e:
+                error_msg = f"[{fetcher.name}] 获取全市场股票列表失败: {str(e)}"
+                logger.warning(error_msg)
+                errors.append(error_msg)
+                continue
+        
+        error_summary = "所有数据源获取股票列表失败:\n" + "\n".join(errors)
+        logger.error(error_summary)
+        raise DataFetchError(error_summary)
+
     def get_daily_data(
         self, 
         stock_code: str,

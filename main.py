@@ -47,6 +47,7 @@ from src.core.market_review import run_market_review
 from src.search_service import SearchService
 from src.analyzer import GeminiAnalyzer
 from src.enums import AnalysisMode
+from src.screener import StockScreener
 
 # 配置日志格式
 LOG_FORMAT = '%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s'
@@ -211,6 +212,12 @@ def parse_arguments() -> argparse.Namespace:
         help='分析模式：technical(技术面)、fundamental(基本面) 或 all(全量分析，默认)'
     )
     
+    parser.add_argument(
+        '--screen',
+        action='store_true',
+        help='执行智能选股模式（筛选涨停未大涨、低位吸筹股）'
+    )
+
     return parser.parse_args()
 
 
@@ -347,6 +354,54 @@ def start_bot_stream_clients(config: Config) -> None:
             logger.error(f"[Main] Failed to start Feishu Stream client: {exc}")
 
 
+def run_screener(args):
+    """
+    运行智能选股模式
+    """
+    logger.info("启动智能选股模式...")
+    try:
+        screener = StockScreener(max_workers=args.workers)
+        results = screener.run_screen()
+        
+        if not results:
+            logger.info("未筛选到符合条件的股票")
+            return
+
+        import pandas as pd
+        df = pd.DataFrame(results)
+        
+        # 格式化输出
+        print("\n" + "="*50)
+        print(f"筛选结果 (共 {len(df)} 只)")
+        print("="*50)
+        
+        # 按涨停次数和位置排序
+        df_sorted = df.sort_values(['limit_up_count', 'position_rank'], ascending=[False, True])
+        
+        # 重命名列以便展示
+        display_cols = {
+            'code': '代码',
+            'name': '名称',
+            'price': '现价',
+            'limit_up_count': '涨停次数(近60日)',
+            'interval_increase': '区间涨幅%',
+            'position_rank': '位置分位%'
+        }
+        df_display = df_sorted.rename(columns=display_cols)
+        
+        print(df_display.to_markdown(index=False, floatfmt=".2f"))
+        print("="*50)
+        
+        # 保存到 CSV
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"stock_screen_result_{timestamp}.csv"
+        df_sorted.to_csv(filename, index=False, encoding='utf-8-sig')
+        logger.info(f"选股结果已保存至: {filename}")
+        
+    except Exception as e:
+        logger.exception(f"选股过程发生异常: {e}")
+
+
 def main() -> int:
     """
     主入口函数
@@ -367,6 +422,11 @@ def main() -> int:
     logger.info("A股自选股智能分析系统 启动")
     logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
+
+    # 优先处理选股模式
+    if args.screen:
+        run_screener(args)
+        return 0
     
     # 验证配置
     warnings = config.validate()

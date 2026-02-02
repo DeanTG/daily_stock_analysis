@@ -206,6 +206,13 @@ class YfinanceFetcher(BaseFetcher):
         
         return df
 
+    def get_all_stock_list(self) -> pd.DataFrame:
+        """
+        获取全市场股票列表 (暂不支持)
+        """
+        # 返回空 DataFrame，让 Manager 尝试下一个数据源
+        return pd.DataFrame(columns=['code', 'name'])
+
 
 if __name__ == "__main__":
     # 测试代码

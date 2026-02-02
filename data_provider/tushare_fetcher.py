@@ -299,6 +299,23 @@ class TushareFetcher(BaseFetcher):
         
         return df
 
+    def get_all_stock_list(self) -> pd.DataFrame:
+        """
+        获取全市场股票列表
+        """
+        if self._api is None:
+            raise DataFetchError("Tushare API 未初始化")
+        
+        try:
+            # 获取基础信息
+            df = self._api.stock_basic(exchange='', list_status='L', fields='ts_code,symbol,name')
+            # 使用 symbol (6位代码) 作为 code
+            df = df.rename(columns={'symbol': 'code'})
+            return df[['code', 'name']]
+        except Exception as e:
+            logger.error(f"Tushare 获取股票列表失败: {e}")
+            raise
+
 
 if __name__ == "__main__":
     # 测试代码

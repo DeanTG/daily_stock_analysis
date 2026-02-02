@@ -405,6 +405,39 @@ class EfinanceFetcher(BaseFetcher):
         
         return df
     
+    def get_all_stock_list(self) -> pd.DataFrame:
+        """
+        获取全市场股票列表
+        """
+        import efinance as ef
+        
+        # 防封禁策略
+        self._set_random_user_agent()
+        self._enforce_rate_limit()
+        
+        try:
+            logger.info("[API调用] ef.stock.get_realtime_quotes() 获取全市场股票列表...")
+            df = ef.stock.get_realtime_quotes()
+            
+            # 标准化列名
+            rename_dict = {}
+            if '股票代码' in df.columns:
+                rename_dict['股票代码'] = 'code'
+            if '股票名称' in df.columns:
+                rename_dict['股票名称'] = 'name'
+            
+            df = df.rename(columns=rename_dict)
+            
+            # 确保包含 code 和 name
+            if 'code' in df.columns and 'name' in df.columns:
+                return df[['code', 'name']]
+            else:
+                raise DataFetchError("Efinance 返回数据缺少 code 或 name 列")
+                
+        except Exception as e:
+            logger.error(f"Efinance 获取股票列表失败: {e}")
+            raise
+    
     def get_realtime_quote(self, stock_code: str) -> Optional[EfinanceRealtimeQuote]:
         """
         获取实时行情数据

@@ -18,6 +18,7 @@ on:
           - market-only   # 仅大盘复盘
           - stocks-only   # 仅股票分析
           - fundamental-only # 仅基本面分析
+          - screener      # 智能选股模式
 
 # 并发控制：同一时间只运行一个分析任务
 concurrency:
@@ -177,19 +178,20 @@ jobs:
             python main.py --no-market-review
           elif [ "$MODE" = "fundamental-only" ]; then
             python main.py --mode fundamental --no-market-review
+          elif [ "$MODE" = "screener" ]; then
+            python main.py --screen
           else
             python main.py
           fi
       
-      - name: 上传分析报告
+      - name: Upload Analysis Reports
         uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: analysis-reports-${{ github.run_number }}
+          name: analysis-reports
           path: |
-            reports/
+            *.md
+            *.csv
             logs/
-          retention-days: 30
       
       - name: 显示运行结果
         if: always()

@@ -468,6 +468,35 @@ class AkshareFetcher(BaseFetcher):
         
         return df
     
+    def get_all_stock_list(self) -> pd.DataFrame:
+        """
+        获取全市场股票列表
+        """
+        import akshare as ak
+        
+        # 防封禁策略
+        self._set_random_user_agent()
+        self._enforce_rate_limit()
+        
+        try:
+            logger.info("[API调用] ak.stock_zh_a_spot_em() 获取全市场股票列表...")
+            # 获取全市场实时行情，包含代码和名称
+            df = ak.stock_zh_a_spot_em()
+            
+            # 标准化列名
+            if '代码' in df.columns and '名称' in df.columns:
+                df = df.rename(columns={'代码': 'code', '名称': 'name'})
+            
+            # 确保包含 code 和 name
+            if 'code' in df.columns and 'name' in df.columns:
+                return df[['code', 'name']]
+            else:
+                raise DataFetchError("Akshare 返回数据缺少 code 或 name 列")
+                
+        except Exception as e:
+            logger.error(f"Akshare 获取股票列表失败: {e}")
+            raise
+    
     def get_realtime_quote(self, stock_code: str, source: str = "em") -> Optional[UnifiedRealtimeQuote]:
         """
         获取实时行情数据（支持多数据源）
