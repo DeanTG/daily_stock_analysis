@@ -22,6 +22,8 @@ A股智能选股器
 """
 
 import logging
+import os
+import time
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional
@@ -30,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from data_provider.base import DataFetcherManager
 from src.stock_analyzer import StockTrendAnalyzer
+from src.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -38,22 +41,35 @@ class StockScreener:
         self.fetcher_manager = DataFetcherManager()
         self.trend_analyzer = StockTrendAnalyzer()
         self.max_workers = max_workers
+    
+    def _cache_path(self) -> str:
+        return os.path.join(os.getcwd(), "cache", "market_snapshot.csv")
+    
+    def _load_cached_snapshot(self, max_age_hours: int = 24) -> Optional[pd.DataFrame]:
+        try:
+            path = self._cache_path()
+            if not os.path.exists(path):
+                return None
+            mtime = os.path.getmtime(path)
+            if time.time() - mtime > max_age_hours * 3600:
+                return None
+            df = pd.read_csv(path)
+            return df
+        except Exception:
+            return None
+    
+    def _save_cached_snapshot(self, df: pd.DataFrame) -> None:
+        try:
+            path = self._cache_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            df.to_csv(path, index=False)
+        except Exception:
+            pass
 
     def get_market_snapshot(self) -> pd.DataFrame:
         """
         获取全市场快照（包含基础指标：价格、市值、PE等）
-        由于 efinance/akshare 的 get_all_stock_list 只返回代码和名称，
-        我们需要尝试获取更详细的实时行情数据来做初筛。
-        
-        策略：
-        使用 efinance.stock.get_realtime_quotes() 获取全市场实时行情，
-        它包含了 价格、涨跌幅、成交量 等信息。
-        但可能不包含 总市值、PE。
-        
-        如果缺少 PE/市值，可能需要额外获取或估算。
-        efinance 的 get_realtime_quotes 返回列包含：
-        股票代码, 股票名称, 涨跌幅, 最新价, 最高, 最低, 开盘, 成交量, 成交额, 换手率, 量比, 委比, 市盈率(动), 市净率, 总市值, 流通市值...
-        (具体列名需确认，efinance 通常返回中文列名)
+        优先使用 AkShare/efinance，失败则使用备用爬虫。
         """
         try:
             import efinance as ef
@@ -81,10 +97,7 @@ class StockScreener:
                 # 回退到 efinance
                 logger.info("尝试使用 efinance 获取全市场实时行情快照...")
                 df = ef.stock.get_realtime_quotes()
-            
-            # 打印列名以便调试
-            # logger.debug(f"全市场数据列名: {df.columns.tolist()}")
-            
+
             # 如果是 efinance 的列名，进行映射
             if '股票代码' in df.columns:
                 rename_map = {
@@ -104,10 +117,116 @@ class StockScreener:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
+            # 缓存数据
+            if not df.empty:
+                self._save_cached_snapshot(df[['code', 'name'] + [c for c in numeric_cols if c in df.columns]])
             return df
         except Exception as e:
-            logger.error(f"获取全市场快照失败: {e}")
+            logger.warning(f"获取全市场快照失败 (AkShare/Efinance): {e}")
+            
+            # 尝试使用备用爬虫方式
+            try:
+                logger.info("尝试使用备用爬虫方式获取...")
+                df = self._fetch_market_snapshot_fallback()
+                if not df.empty:
+                    self._save_cached_snapshot(df)
+                    return df
+            except Exception as e2:
+                logger.error(f"备用爬虫方式也失败: {e2}")
+            
+            # 尝试读取缓存
+            cached = self._load_cached_snapshot()
+            if cached is not None and not cached.empty:
+                logger.warning("使用缓存的市场快照继续选股")
+                return cached
+            
+            logger.error("无法获取市场快照，且无可用缓存")
             return pd.DataFrame()
+
+    def _fetch_market_snapshot_fallback(self) -> pd.DataFrame:
+        """
+        备用爬虫：直接请求东财接口（模拟浏览器行为）
+        """
+        import requests
+        import time
+        
+        # 东财全部A股接口
+        url = "http://82.push2.eastmoney.com/api/qt/clist/get"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Referer": "http://quote.eastmoney.com/",
+            "Accept": "*/*"
+        }
+        
+        # 参数: fs=m:0+t:6,m:0+t:80 (沪深A股)
+        # fields: f12=code, f14=name, f2=price, f3=pct_chg, f9=pe, f20=total_mv, f21=circ_mv
+        params = {
+            "pn": 1,
+            "pz": 100,  
+            "po": 1,
+            "np": 1,
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": 2,
+            "invt": 2,
+            "fid": "f3",
+            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
+            "fields": "f12,f14,f2,f3,f9,f20,f21"
+        }
+        
+        all_data = []
+        page = 1
+        while True:
+            params['pn'] = page
+            
+            try:
+                logger.info(f"Fallback 爬虫: 获取第 {page} 页...")
+                resp = requests.get(url, params=params, headers=headers, timeout=10)
+                if resp.status_code != 200:
+                    break
+                    
+                data = resp.json()
+                if not data or 'data' not in data or 'diff' not in data['data']:
+                    break
+                
+                rows = data['data']['diff']
+                if not rows:
+                    break
+                    
+                all_data.extend(rows)
+                
+                if len(all_data) >= data['data']['total']:
+                    break
+                    
+                page += 1
+                time.sleep(0.5) 
+                
+            except Exception as e:
+                logger.error(f"Fallback 爬虫请求异常: {e}")
+                break
+        
+        if not all_data:
+            return pd.DataFrame()
+            
+        df = pd.DataFrame(all_data)
+        
+        rename_map = {
+            'f12': 'code',
+            'f14': 'name',
+            'f2': 'price',
+            'f3': 'pct_chg',
+            'f9': 'pe',
+            'f20': 'total_mv',
+            'f21': 'circ_mv'
+        }
+        df = df.rename(columns=rename_map)
+        
+        for col in ['price', 'pct_chg', 'pe', 'total_mv', 'circ_mv']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        logger.info(f"Fallback 爬虫成功获取 {len(df)} 条数据")
+        return df
 
     def filter_basics(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -119,24 +238,14 @@ class StockScreener:
         """
         if df.empty:
             return df
-            
         logger.info(f"基础过滤前数量: {len(df)}")
-        
-        # 1. 价格过滤
-        df = df[df['price'] <= 20]
-        
-        # 2. 亏损过滤 (PE > 0)
-        # 注意：有些数据源 PE 为 "-" 或 NaN
-        df = df[df['pe'] > 0]
-        
-        # 3. 市值过滤
-        # efinance 的总市值单位通常是 元。200亿 = 200 * 10^8
-        # 有些可能是 '-'
-        # 先检查单位，通常 efinance 返回的是完整数值
-        # 假设单位是元
-        market_cap_limit = 200 * 100000000 
-        df = df[df['total_mv'] <= market_cap_limit]
-        
+        if 'price' in df.columns:
+            df = df[df['price'] <= 20]
+        if 'pe' in df.columns:
+            df = df[df['pe'] > 0]
+        if 'total_mv' in df.columns:
+            market_cap_limit = 200 * 100000000 
+            df = df[df['total_mv'] <= market_cap_limit]
         logger.info(f"基础过滤后数量: {len(df)}")
         return df
 
